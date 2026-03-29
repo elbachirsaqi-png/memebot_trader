@@ -45,10 +45,6 @@ After your decision, the bot calculates a FINAL SCORE:
 
 The bot opens a trade ONLY if FINAL_SCORE >= 60.
 
-This means:
-If you exaggerate hype fields on weak tokens,
-the trade may open incorrectly.
-
 Be realistic and strict.
 
 ---------------------------------------------------
@@ -84,8 +80,6 @@ Strong token conditions:
 - top_holder_percent <= 30 preferred
 - top_holder_percent <= 15 for X10
 - age between 10 and 240 minutes preferred
-
-
 
 ---------------------------------------------------
 HYPE FIELD RULES
@@ -129,8 +123,6 @@ ONLY if ALL:
 - top_holder <= 15
 - age <= 90
 
-
-
 ---------------------------------------------------
 OUTPUT FORMAT (STRICT JSON ONLY)
 
@@ -166,22 +158,21 @@ TOKENS:
         }
 
         payload = {
-            "model": "grok-4-fast-non-reasoning",
+            "model": "grok-4-fast-non-reasoning",  
             "messages": [
                 {"role": "user", "content": prompt}
             ]
         }
 
         url = "https://api.x.ai/v1/chat/completions"
+
         for attempt in range(3):
-
             try:
-
                 response = requests.post(
                     url,
                     headers=headers,
                     json=payload,
-                    timeout=20
+                    timeout=30  # ✅ 30s au lieu de 20s
                 )
 
                 if response.status_code != 200:
@@ -197,8 +188,9 @@ TOKENS:
                 result = response.json()
 
                 if not isinstance(result, dict):
-                    return []
-                
+                    time.sleep(1)
+                    continue
+
                 break
 
             except Exception as e:
@@ -206,22 +198,36 @@ TOKENS:
                 time.sleep(1)
 
         else:
-            return {"decision": "WAIT", "address": None}
+            return []  # ✅ liste vide, jamais un dict
+
         print("DEBUG API RESPONSE:", result)
 
         if "choices" not in result:
-            return {"address": None, "decision": "WAIT"}
+            return []  # ✅ liste vide
 
         decision_text = result["choices"][0]["message"]["content"]
+
+        # Nettoyer les backticks markdown si Grok en ajoute
+        decision_text = decision_text.strip()
+        if decision_text.startswith("```"):
+            decision_text = decision_text.split("```")[1]
+            if decision_text.startswith("json"):
+                decision_text = decision_text[4:]
+        decision_text = decision_text.strip()
 
         try:
             decision_json = json.loads(decision_text)
 
             if isinstance(decision_json, dict):
-                return [decision_json]
+                return [decision_json]  # ✅ toujours une liste
 
-            return decision_json
+            if isinstance(decision_json, list):
+                return decision_json
+
+            return []  # ✅ fallback liste vide
+
         except:
-            return {"address": None, "decision": "WAIT"}
+            print("Grok JSON parse error:", decision_text[:200])
+            return []  # ✅ liste vide
     
     

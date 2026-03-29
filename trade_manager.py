@@ -4,11 +4,15 @@ import time
 from telegram_bot import TelegramBot
 from dotenv import load_dotenv
 import os
+import threading
+
 
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT")
+
+
 
 class TradeManager:
 
@@ -25,6 +29,7 @@ class TradeManager:
         self.cooldowns = {}  # address -> timestamp
 
         self.token_trade_history = {}
+        self._lock = threading.Lock()
 
         self.telegram = TelegramBot(TOKEN, CHAT_ID)
         self.bot_running = True
@@ -37,41 +42,46 @@ class TradeManager:
         last_trade = self.token_trade_history[address]
 
         # 1 heure
-        if time.time() - last_trade < 3600:
+        if time.time() - last_trade < 14400:
             return True
 
         return False
    
-    def open_trade(self, mode, address, entry_price, symbol=None):
+    def open_trade(self, mode, address, entry_price, symbol=None, copied_from=None):
+        with self._lock:
+            # 🚫 Empêcher double trade actif
+            for trade in self.active_trades:
+                if trade.address == address:
+                    print("Trade already active for this token.")
+                    return
 
-        # 🚫 Empêcher double trade actif
-        for trade in self.active_trades:
-            if trade.address == address:
-                print("Trade already active for this token.")
+            if len(self.active_trades) >= 4:
+                print("Max active trades reached.")
                 return
 
-        if len(self.active_trades) >= 4:
-            print("Max active trades reached.")
-            return
+            if self.capital_total < self.trade_amount:
+                print("Not enough capital.")
+                return
 
-        if self.capital_total < self.trade_amount:
-            print("Not enough capital.")
-            return
+            self.capital_total -= self.trade_amount
 
-        self.capital_total -= self.trade_amount
+            trade = Trade(mode, address, entry_price)
+            trade.symbol = symbol
+            trade.copied_from = copied_from
+            self.active_trades.append(trade)
 
-        trade = Trade(mode, address, entry_price)
-        trade.symbol = symbol
-        self.active_trades.append(trade)
+            print(f"Trade opened: {address} | Mode: {mode}")
+            msg = (
+                f"📈 OPEN TRADE\n"
+                f"Coin: {symbol}\n"
+                f"Address: {address}\n"
+                f"Entry: {entry_price}"
+            )
+            if copied_from:
+                msg += f"\n👛 Copied from: {copied_from[:8]}...{copied_from[-4:]}"
 
-        print(f"Trade opened: {address} | Mode: {mode}")
-        self.telegram.send_message(
-            f"📈 OPEN TRADE\n"
-            f"Coin: {symbol}\n"
-            f"Address: {address}\n"
-            f"Entry: {entry_price}"
-        )
-        self.token_trade_history[address] = time.time()
+            self.telegram.send_message(msg)
+            self.token_trade_history[address] = time.time()
 
     def update_all_active_trades(self, price_fetcher):
 
@@ -116,71 +126,60 @@ class TradeManager:
             self.active_trades.remove(trade)
         
     def update_trades(self, address, price):
-
+        
         closed_trades = []
+        messages_to_send = []
+        with self._lock:
+            for trade in self.active_trades:
+                if trade.address != address:
+                    continue
 
-        for trade in self.active_trades:
-            if trade.address != address:
-                continue
+                result = trade.update_price(price)
 
-            result = trade.update_price(price)
+                if result:
+                    print("Trade closed:", result)
+                    
 
-            if result:
+                    profit_percent = result["profit_percent"]
+                    fee = self.trade_amount * 0.003
+                    dollar_profit = (profit_percent / 100) * self.trade_amount - fee
 
-                print("Trade closed:", result)
-                self.telegram.send_message(
-                    f"📉 CLOSE TRADE\n"
-                    f"Coin: {getattr(trade, 'symbol', 'UNK')}\n"
-                    f"Profit: {round(result['profit_percent'],2)}%\n"
-                    f"Reason: {result['reason']}"
-                )
+                    if profit_percent > 200:
+                        self.dex.detect_early_buyers(trade.address)
 
-                # --- Calcul profit en $ ---
-                profit_percent = result["profit_percent"]
-                fee = self.trade_amount * 0.003   # 0.3% swap
-                dollar_profit = (profit_percent / 100) * self.trade_amount - fee
+                    self.capital_total += self.trade_amount + dollar_profit
+                    print(f"Capital now: {round(self.capital_total, 2)}$")
 
-                # 🔥 détecter sniper wallets si gros profit
-                if profit_percent > 200:
-                    self.dex.detect_early_buyers(trade.address)
+                    self.db.log_trade(
+                        result["mode"], result["entry"],
+                        result["exit"], result["profit_percent"], result["reason"]
+                    )
 
-                # --- Mise à jour capital ---
-                self.capital_total += self.trade_amount + dollar_profit
+                    self.closed_trades_session.append(result)
 
-                print(f"Capital now: {round(self.capital_total, 2)}$")
+                    cooldown_duration = 0
+                    reason = result["reason"]
+                    if reason == "STOP_LOSS":
+                        cooldown_duration = 45 * 60
+                    elif reason == "SELL_FLOOR":
+                        cooldown_duration = 20 * 60
+                    if cooldown_duration > 0:
+                        self.cooldowns[trade.address] = time.time() + cooldown_duration
 
-                # --- Log en base ---
-                self.db.log_trade(
-                    result["mode"],
-                    result["entry"],
-                    result["exit"],
-                    result["profit_percent"],
-                    result["reason"]
-                )
+                    closed_trades.append(trade)
 
-                # --- Ajouter à session ---
-                self.closed_trades_session.append(result)
-                
-                # --- Cooldown intelligent ---
-                cooldown_duration = 0
-                reason = result["reason"]
-
-                if reason == "STOP_LOSS":
-                    cooldown_duration = 45 * 60  # 45 min
-
-                elif reason == "SELL_FLOOR":
-                    cooldown_duration = 20 * 60  # 20 min
-
-                if cooldown_duration > 0:
-                    self.cooldowns[trade.address] = time.time() + cooldown_duration
-                
-                closed_trades.append(trade)
-
-        # --- Supprimer trades fermés ---
-        for trade in closed_trades:
-            self.active_trades.remove(trade)
-
-        # --- Résumé si 4 trades fermés ---
+                    messages_to_send.append(
+                        f"📉 CLOSE TRADE\n"
+                        f"Coin: {getattr(trade, 'symbol', 'UNK')}\n"
+                        f"Profit: {round(result['profit_percent'],2)}%\n"
+                        f"Reason: {result['reason']}"
+                    )
+            # ✅ remove DANS le lock
+            for trade in closed_trades:
+                self.active_trades.remove(trade)
+        for msg in messages_to_send:
+            self.telegram.send_message(msg)
+        # Résumé hors lock (pas de shared state modifié)
         if len(self.closed_trades_session) >= 4:
             self.print_session_summary()
             self.closed_trades_session.clear()
@@ -299,3 +298,11 @@ class TradeManager:
 
             elif text == "/trades":
                 self.send_open_trades()
+
+            elif text.startswith("/setcapital"):  # ← AJOUTER ICI
+                try:
+                    amount = float(text.split(" ")[1])
+                    self.capital_total = amount
+                    self.telegram.send_message(f"💰 Capital réinitialisé à {round(amount, 2)}$")
+                except:
+                    self.telegram.send_message("❌ Usage: /setcapital 20")

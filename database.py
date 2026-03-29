@@ -5,7 +5,7 @@ from datetime import datetime
 class TradeDatabase:
 
     def __init__(self, db_name="trades.db"):
-        self.conn = sqlite3.connect(db_name)
+        self.conn = sqlite3.connect("trades.db", check_same_thread=False)
         self.create_table()
 
     def create_table(self):

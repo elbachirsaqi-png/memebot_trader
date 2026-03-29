@@ -9,11 +9,12 @@ class Trade:
         self.current_price = entry_price
         self.mode = mode  # "X2", "X5", "X10"
         self.open_time = time.time()
-        self.stop_loss_level = 0.7
+        self.stop_loss_level = 0.6
         self.floor_level = None
         self.super_run_active = False
         self.near_target_hit = False
         self.max_multiple = 1
+        self.consecutive_failures = 0
 
         self.start_time = time.time()
 
@@ -22,7 +23,10 @@ class Trade:
     # =========================
 
     def update_price(self, price):
-        self.current_price = price
+        if price <= 0:
+            self.current_price = 0.00000001
+        else:
+            self.current_price = price
         self.multiple = self.current_price / self.entry_price
         self.update_max_price()
         self.update_floors()
@@ -54,16 +58,28 @@ class Trade:
 
     def update_floors(self):
 
+        # TP1 → sécuriser trade
+        if self.max_multiple >= 1.2 and self.floor_level is None:
+            self.floor_level = 1.0
+        
+        # Sécuriser à +50%
+        if self.max_multiple >= 1.5:
+            self.floor_level = 1.2  # lock +20%
+
         # X5 and X10 floor at 2x
         if self.mode in ["X5", "X10"]:
             if self.max_multiple >= 2:
-                self.floor_level = 2
+                self.floor_level = 1.6  # lock +60%
+        if self.max_multiple >= 3:
+            self.floor_level = 2.2  # lock +120%
 
         # X10 additional floor at 5x
         if self.mode == "X10":
             if self.max_multiple >= 5:
-                self.floor_level = 5
-
+                self.floor_level = 4
+            if self.max_multiple >= 7:
+                self.floor_level = 6.0
+                
         # Super run activation
         if self.mode == "X10" and self.max_multiple >= 10:
             self.super_run_active = True
@@ -75,7 +91,7 @@ class Trade:
             return self.close_trade("STOP_LOSS")
 
         # 2️⃣ Timeout
-        if time.time() - self.start_time > 10800:
+        if time.time() - self.start_time > 3600:
             if self.multiple < 1.3:
                 return self.close_trade("TIMEOUT_EXIT")
 

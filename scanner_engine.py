@@ -49,7 +49,7 @@ class ScannerEngine:
         if token.age_minutes < 0.15:
             return False
         
-        if token.age_minutes > 360:
+        if token.age_minutes > 30:
             return False
 
         if not token.mint_disabled:

@@ -3,9 +3,13 @@ from solders.pubkey import Pubkey
 import time
 from dotenv import load_dotenv
 load_dotenv()
+import os
 
+load_dotenv()
+SHYFT_API_KEY = os.getenv("SHYFT_API_KEY")
+RPC_URL = f"https://rpc.shyft.to?api_key={SHYFT_API_KEY}"
 
-RPC_URL = "https://mainnet.helius-rpc.com/?api-key=51cd6fd8-5960-4710-9dfd-ec3c1d1866fb"
+RPC_heliusURL = "https://mainnet.helius-rpc.com/?api-key=51cd6fd8-5960-4710-9dfd-ec3c1d1866fb"
 
 client = Client(RPC_URL)
 
@@ -60,6 +64,8 @@ class OnChainAnalyzer:
             current_time = int(time.time())
 
             age_seconds = current_time - block_time
+            if age_seconds < 0:
+                return 1
             age_minutes = age_seconds / 60
 
             return round(age_minutes, 2)
@@ -69,10 +75,8 @@ class OnChainAnalyzer:
             return None
 
     def check_mint_security(self, token_address):
-
         try:
             token_pubkey = Pubkey.from_string(token_address)
-
             account_info = client.get_account_info(token_pubkey)
 
             if not account_info.value:
@@ -80,18 +84,25 @@ class OnChainAnalyzer:
 
             data = account_info.value.data
 
-            # Mint account structure SPL:
-            # bytes 0-32: mint authority option
-            # bytes 36-68: freeze authority option
+            if len(data) < 82:
+                return None
 
-            mint_authority_disabled = data[0] == 0
-            freeze_authority_disabled = data[36] == 0
+            import struct
+
+            # Bytes 0-3 : mint_authority option (u32)
+            mint_authority_option = struct.unpack_from('<I', data, 0)[0]
+
+            # Bytes 46-49 : freeze_authority option (u32)
+            freeze_authority_option = struct.unpack_from('<I', data, 46)[0]
+
+            mint_disabled = (mint_authority_option == 0)
+            freeze_disabled = (freeze_authority_option == 0)
 
             return {
-                "mint_disabled": mint_authority_disabled,
-                "freeze_disabled": freeze_authority_disabled
+                "mint_disabled": mint_disabled,
+                "freeze_disabled": freeze_disabled
             }
 
         except Exception as e:
             print("Mint security error:", repr(e))
-            return None      
+            return None

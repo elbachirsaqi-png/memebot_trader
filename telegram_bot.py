@@ -1,4 +1,5 @@
 import requests
+import time
 
 class TelegramBot:
 
@@ -24,25 +25,36 @@ class TelegramBot:
             "chat_id": self.chat_id,
             "text": text
         }
-        requests.post(url, data=payload)
+        for attempt in range(3):  # 3 tentatives
+            try:
+                r = requests.post(url, data=payload, timeout=10)
+                if r.status_code == 200:
+                    return
+            except Exception as e:
+                print(f"⚠ Telegram send error (attempt {attempt+1}): {e}")
+                time.sleep(2)
 
     def get_updates(self):
-
         url = f"{self.base_url}/getUpdates"
-
         params = {}
         if self.last_update_id:
             params["offset"] = self.last_update_id + 1
 
-        response = requests.get(url, params=params)
-        data = response.json()
+        for attempt in range(3):  # 3 tentatives
+            try:
+                response = requests.get(url, params=params, timeout=10)
+                data = response.json()
 
-        if "result" not in data:
-            return []
+                if "result" not in data:
+                    return []
 
-        updates = data["result"]
+                updates = data["result"]
+                if updates:
+                    self.last_update_id = updates[-1]["update_id"]
+                return updates
 
-        if updates:
-            self.last_update_id = updates[-1]["update_id"]
+            except Exception as e:
+                print(f"⚠ Telegram get_updates error (attempt {attempt+1}): {e}")
+                time.sleep(2)
 
-        return updates
+        return []  # retourner liste vide si toutes les tentatives échouent
